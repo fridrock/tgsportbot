@@ -42,7 +42,7 @@ func (bs *BrokerWorkerImpl) Configure() error {
 
 // TODO remake to getting url from .env
 func (bs BrokerWorkerImpl) getConnection() (*amqp.Connection, error) {
-	conn, err := amqp.Dial("amqp://guest:guest@localhost:5672/")
+	conn, err := amqp.Dial("amqp://guest:guest@localhost/")
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ func (bs *BrokerWorkerImpl) createExchange(exchangeName string) error {
 	}
 	err := bs.ch.ExchangeDeclare(
 		exchangeName,
-		"topic",
+		"direct",
 		true,
 		false,
 		false,
@@ -78,7 +78,7 @@ func (bs *BrokerWorkerImpl) createQueue(exchangeName, routingKey string) (queueN
 		return bs.exchanges[exchangeName][routingKey], nil
 	}
 	q, err := bs.ch.QueueDeclare(
-		"",
+		routingKey,
 		false,
 		false,
 		false,
