@@ -2,159 +2,148 @@ package broker
 
 import (
 	"context"
-	"fmt"
-	"log"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// TODO make message consuming
-type BrokerWorker interface {
+type BrokerConfigurer interface {
 	Configure() error
-	SendMessage(ctx context.Context, message string, path ...string) error
 	Stop()
 }
 
-type BrokerWorkerImpl struct {
-	conn      *amqp.Connection
-	ch        *amqp.Channel
-	exchanges map[string]map[string]string
+type BrokerProducer interface {
+	CreateChannel(*amqp.Connection) error
+	CreateExchange(exchangeName, exchangeType string) error
+	PublishMessage(ctx context.Context, exchangeName, routingKey, body string) error
+	Stop()
 }
 
-func (bs *BrokerWorkerImpl) Stop() {
-	bs.ch.Close()
-	bs.conn.Close()
-}
-func (bs *BrokerWorkerImpl) Configure() error {
-	connection, err := bs.getConnection()
-	if err != nil {
-		return err
-	}
-	bs.conn = connection
-	channel, err := bs.getChannel()
-	if err != nil {
-		return err
-	}
-	bs.ch = channel
-	bs.exchanges = make(map[string]map[string]string, 1)
-	return nil
+type BrokerConsumer interface {
+	CreateChannel(*amqp.Connection) error
+	CreateQueue(queueName ...string) (amqp.Queue, error)
+	SetBinding(q amqp.Queue, boundingKey, exchangeName string) error
+	RegisterConsumer(amqp.Queue, func(<-chan amqp.Delivery))
+	Stop()
 }
 
-// TODO remake to getting url from .env
-func (bs BrokerWorkerImpl) getConnection() (*amqp.Connection, error) {
+type BrokerConfigurerImpl struct {
+	Connection *amqp.Connection
+}
+
+func (bci *BrokerConfigurerImpl) Configure() error {
 	conn, err := amqp.Dial("amqp://guest:guest@localhost/")
 	if err != nil {
-		return nil, err
-	}
-	return conn, err
-}
-func (bs BrokerWorkerImpl) getChannel() (*amqp.Channel, error) {
-	channel, err := bs.conn.Channel()
-	if err != nil {
-		return nil, err
-	}
-	return channel, nil
-}
-func (bs *BrokerWorkerImpl) createExchange(exchangeName string) error {
-	if _, ok := bs.exchanges[exchangeName]; ok {
-		return nil
-	}
-	err := bs.ch.ExchangeDeclare(
-		exchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err == nil {
-		bs.exchanges[exchangeName] = make(map[string]string)
-	}
-	return err
-}
-func (bs *BrokerWorkerImpl) createQueue(exchangeName, routingKey string) (queueName string, err error) {
-	if _, ok := bs.exchanges[exchangeName][routingKey]; ok {
-		return bs.exchanges[exchangeName][routingKey], nil
-	}
-	q, err := bs.ch.QueueDeclare(
-		routingKey,
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
-	if err != nil {
-		return "", err
-	}
-	return q.Name, nil
-}
-func (bs *BrokerWorkerImpl) bindQueue(queueName, exchangeName, routingKey string) error {
-	if _, ok := bs.exchanges[exchangeName][routingKey]; ok {
-		return nil
-	}
-	err := bs.ch.QueueBind(
-		queueName,
-		routingKey,
-		exchangeName,
-		false,
-		nil,
-	)
-	if err != nil {
 		return err
 	}
-	bs.exchanges[exchangeName][routingKey] = queueName
+	bci.Connection = conn
 	return nil
 }
 
-func (bs *BrokerWorkerImpl) SendMessage(ctx context.Context, message string, path ...string) error {
-	exchangeName, routingKey := bs.getPath(path)
-	err := bs.generatePath(exchangeName, routingKey)
+func (bci *BrokerConfigurerImpl) Stop() {
+	bci.Connection.Close()
+}
+
+type BrokerProducerImpl struct {
+	Ch *amqp.Channel
+}
+
+func (bpi *BrokerProducerImpl) CreateChannel(conn *amqp.Connection) error {
+	channel, err := conn.Channel()
 	if err != nil {
 		return err
 	}
-	err = bs.ch.PublishWithContext(ctx,
+	bpi.Ch = channel
+	return nil
+}
+
+func (bpi *BrokerProducerImpl) CreateExchange(exchangeName, exchangeType string) error {
+	return bpi.Ch.ExchangeDeclare(
+		exchangeName,
+		exchangeType,
+		true,  //durable
+		false, //autoDelete
+		false, //internal
+		false, //noWait
+		nil,   //args
+	)
+}
+
+func (bpi *BrokerProducerImpl) PublishMessage(ctx context.Context, exchangeName, routingKey, body string) error {
+	return bpi.Ch.PublishWithContext(
+		ctx,
 		exchangeName,
 		routingKey,
-		false, // mandatory
-		false, // immediate
+		false, //mandatory
+		false, //immediate
 		amqp.Publishing{
-			ContentType: "text/plain",
-			Body:        []byte(message),
+			ContentType: "application/json",
+			Body:        []byte(body),
 		})
-	return err
 }
-func (bs *BrokerWorkerImpl) generatePath(exchangeName, routingKey string) error {
-	bs.createExchange(exchangeName)
 
-	q, err := bs.createQueue(exchangeName, routingKey)
+func (bpi *BrokerProducerImpl) Stop() {
+	bpi.Ch.Close()
+}
+
+type BrokerConsumerImpl struct {
+	Ch *amqp.Channel
+}
+
+func (bci *BrokerConsumerImpl) CreateChannel(conn *amqp.Connection) error {
+	channel, err := conn.Channel()
 	if err != nil {
 		return err
 	}
-	err = bs.bindQueue(q, exchangeName, routingKey)
-	if err != nil {
-		return err
-	}
+	bci.Ch = channel
 	return nil
 }
-func (bs BrokerWorkerImpl) getPath(path []string) (exchangeName, routingKey string) {
-	paramsNum := len(path)
-	for i := 0; i < 2-paramsNum; i++ {
-		path = append(path, "default")
-	}
-	return path[0], path[1]
-}
 
-func CreateBroker() *BrokerWorkerImpl {
-	br := &BrokerWorkerImpl{}
-	err := br.Configure()
+func (bci *BrokerConsumerImpl) CreateQueue(queueName ...string) (amqp.Queue, error) {
+	var queueNameStr string = ""
+	if len(queueName) != 0 {
+		queueNameStr = queueName[0]
+	}
+	var q amqp.Queue
+	q, err := bci.Ch.QueueDeclare(
+		queueNameStr,
+		false, //durable
+		true,  // autoDelete
+		false, // exclusive
+		false, // noWait
+		nil,   // args
+	)
 	if err != nil {
-		log.Fatal(err.Error())
+		return q, err
 	}
-	return br
+	return q, nil
 }
+func (bci *BrokerConsumerImpl) SetBinding(q amqp.Queue, boundingKey, exchangeName string) error {
+	return bci.Ch.QueueBind(
+		q.Name,
+		boundingKey,
+		exchangeName,
+		false, // noWait
+		nil,   // args
+	)
 
-func (bs BrokerWorkerImpl) Show() {
-	fmt.Println(bs.exchanges)
+}
+func (bci *BrokerConsumerImpl) RegisterConsumer(q amqp.Queue, f func(<-chan amqp.Delivery)) error {
+	msgs, err := bci.Ch.Consume(
+		q.Name, // queue
+		"",     // consumer
+		true,   // auto-ack
+		false,  // exclusive
+		false,  // no-local
+		false,  // no-wait
+		nil,    // args
+	)
+	if err != nil {
+		return err
+	}
+	go f(msgs)
+
+	return nil
+}
+func (bci *BrokerConsumerImpl) Stop() {
+	bci.Ch.Close()
 }
