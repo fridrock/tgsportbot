@@ -32,6 +32,9 @@ func SendExerciseGroup(br broker.BrokerWorker) {
 	if err != nil {
 		slog.Error(fmt.Errorf("error sending message: %v", err).Error())
 	}
+	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err = br.SendMessage(ctx, "Hello world", "ex_group", "update")
 }
 
 func main() {
