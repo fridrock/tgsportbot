@@ -13,7 +13,7 @@ import (
 )
 
 type CreateExGroupEvent struct {
-	UserId int32  `json:"user_id"`
+	UserId int64  `json:"user_id"`
 	Name   string `json:"name"`
 }
 
@@ -38,9 +38,7 @@ func SendExerciseGroup(br rs.Producer) {
 	if err != nil {
 		slog.Error(fmt.Errorf("error sending message: %v", err).Error())
 	}
-	ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	err = br.SendMessage(ctx, "Hello world", "ex_group", "update")
+
 }
 
 func setupConfigurer() *rs.RConfigurer {
@@ -73,6 +71,9 @@ func setupConsumer(brc *rs.RConfigurer) *rs.RConsumer {
 	rdispatcher := rs.NewRDispacher()
 	rdispatcher.RegisterHandler("tgbot.exgroup.create", rs.NewHandlerFunc(func(msg amqp.Delivery) {
 		slog.Info(fmt.Sprintf("Exgroup: %s was saved", string(msg.Body)))
+	}))
+	rdispatcher.RegisterHandler("tgbot.exgroup.delete", rs.NewHandlerFunc(func(msg amqp.Delivery) {
+		slog.Info(string(msg.Body))
 	}))
 	brConsumer.RegisterDispatcher(q, rdispatcher)
 	return brConsumer
